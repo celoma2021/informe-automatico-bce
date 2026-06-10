@@ -398,7 +398,7 @@ ECONÓMICA: variación de ventas, margen bruto (actual vs anterior), promedio me
 # ── Generación del .docx ──────────────────────────────────────────────────────
 def generar_docx(b, n, textos) -> bytes:
     from docx import Document
-    from docx.shared import Pt, RGBColor, Inches, Cm
+    from docx.shared import Pt, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
