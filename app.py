@@ -151,7 +151,7 @@ def login():
 
 # ── Helpers API ───────────────────────────────────────────────────────────────
 API_URL = "https://api.anthropic.com/v1/messages"
-MODEL   = "claude-haiku-4-5-20251001"
+MODEL   = "claude-sonnet-4-20250514"
 
 def pdf_a_base64(bytes_pdf: bytes) -> str:
     return base64.standard_b64encode(bytes_pdf).decode("utf-8")
@@ -174,15 +174,12 @@ def llamar_api(prompt: str, pdf_b64: str, max_tokens: int, api_key: str) -> dict
         API_URL, data=payload,
         headers={"Content-Type": "application/json",
                  "x-api-key": api_key,
-                 "anthropic-version": "2023-06-01"},
+                 "anthropic-version": "2023-06-01",
+                 "anthropic-beta": "pdfs-2024-09-25"},
         method="POST"
     )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            r = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detalle = e.read().decode("utf-8")
-        raise RuntimeError(f"API error {e.code}: {detalle}")
+    with urllib.request.urlopen(req) as resp:
+        r = json.loads(resp.read().decode("utf-8"))
     texto = r["content"][0]["text"].strip()
     if texto.startswith("```"):
         texto = texto.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -202,12 +199,8 @@ def llamar_api_texto(prompt: str, api_key: str, max_tokens: int = 3000) -> dict:
                  "anthropic-version": "2023-06-01"},
         method="POST"
     )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            r = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detalle = e.read().decode("utf-8")
-        raise RuntimeError(f"API error {e.code}: {detalle}")
+    with urllib.request.urlopen(req) as resp:
+        r = json.loads(resp.read().decode("utf-8"))
     texto = r["content"][0]["text"].strip()
     if texto.startswith("```"):
         texto = texto.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -248,7 +241,10 @@ Devolvé ÚNICAMENTE un objeto JSON válido, sin texto adicional, sin markdown, 
   "ventas_netas_anterior": 0, "costo_ventas_anterior": 0, "resultado_bruto_anterior": 0,
   "gastos_comercializacion_anterior": 0, "gastos_administracion_anterior": 0,
   "gastos_financieros_anterior": 0, "resultado_operativo_anterior": 0, "ganancia_neta_anterior": 0,
-  "amortizaciones": 0, "compras_periodo": 0
+  "amortizaciones": 0, "compras_periodo": 0,
+  "socios": [{"nombre": "", "cuit": "", "porcentaje": 0, "cargo": ""}],
+  "aportes_irrevocables": 0,
+  "tiene_aportes_irrevocables": false
 }
 
 IMPORTANTE:
@@ -257,6 +253,9 @@ IMPORTANTE:
 - fecha_cierre formato: "DD de mes de YYYY"
 - nro_ejercicio: número del ejercicio (ej: 12)
 - Buscá el CUIT en el informe del auditor o constancia de legalización
+- socios: buscalos en la carátula o notas del balance (composición del capital). Incluí nombre, CUIT si figura, porcentaje y cargo
+- aportes_irrevocables: si figuran aportes irrevocables en el pasivo no corriente o PN, extraé el monto en miles. Si no figuran, 0
+- tiene_aportes_irrevocables: true si el balance los menciona
 """
 
 PROMPT_NOSIS = """Sos un analista crediticio argentino. Analizá este informe NOSIS y extraé los datos indicados.
@@ -266,20 +265,20 @@ Devolvé ÚNICAMENTE un objeto JSON válido, sin texto adicional, sin markdown, 
   "razon_social": "", "cuit": "", "domicilio": "", "actividad_principal": "",
   "tipo_sociedad": "", "fecha_contrato_social": "",
   "score": 0, "resultado_cda": "",
-  "endeudamiento_sf_actual": 0, "compromisos_mensuales": 0,
+  "endeudamiento_sf_actual": 0, "endeudamiento_sf_cierre": 0, "compromisos_mensuales": 0,
   "situacion_bcra": "",
   "tiene_cheques_rechazados": false, "tiene_deuda_previsional": false,
   "deuda_previsional_detalle": "",
   "srt_vigente": false, "srt_aseguradora": "",
   "cantidad_empleados": "",
   "entidades_deuda": [{"entidad": "", "monto": 0, "situacion": ""}],
-  "consultas_ultimos_12_meses": 0,
-  "socios": [{"nombre": "", "porcentaje": 0, "cargo": ""}]
+  "consultas_ultimos_12_meses": 0
 }
 
 IMPORTANTE:
 - endeudamiento_sf_actual y compromisos_mensuales en miles de pesos
-- socios: buscalos en árbol de relaciones o sección SOCIEDADES
+- endeudamiento_sf_cierre: endeudamiento en el sistema financiero a la fecha de cierre del balance (buscalo en la tabla histórica de Bureau de Crédito, mes coincidente con la fecha de cierre)
+- NO extraer socios del NOSIS (los socios vienen del balance)
 """
 
 # ── Cálculo de índices ────────────────────────────────────────────────────────
@@ -299,6 +298,11 @@ def calcular_indices(b):
     at   = b.get("total_activo", 0)
     pt   = b.get("total_pasivo", 0)
     pn   = b.get("patrimonio_neto", 0)
+    # Aportes irrevocables: se suman al pasivo y se restan del PN para los índices
+    ai   = b.get("aportes_irrevocables", 0)
+    if ai and b.get("tiene_aportes_irrevocables", False):
+        pt = pt + ai
+        pn = max(pn - ai, 1)
     ac_t = ac.get("total", 0);  pc_t = pc.get("total", 0)
     bc   = ac.get("bienes_de_cambio", 0)
     bu   = anc.get("bienes_de_uso", 0)
@@ -388,10 +392,30 @@ INSTRUCCIONES:
 - Si una variación es null, no la menciones
 - Cada sección: UN párrafo largo y continuo
 
-CRITERIOS DE CALIFICACIÓN:
-- Patrimonial: BUENA (solvencia >1.5), REGULAR (1.1-1.5), COMPROMETIDA (<1.1)
-- Financiera: BUENA (liquidez corriente >1.5), REGULAR (1.0-1.5), COMPROMETIDA (<1.0)
+CRITERIOS DE CALIFICACIÓN BNA:
+- Patrimonial: BUENA (solvencia >1.2), REGULAR (1.0-1.2), COMPROMETIDA (<1.0)
+- Financiera: BUENA (liquidez corriente >1.2), REGULAR (0.8-1.2), COMPROMETIDA (<0.8)
 - Económica: BUENA (margen neto >10%), REGULAR (3-10%), AJUSTADA (0-3%), INSUFICIENTE (<0)
+
+SOCIOS: Los socios deben tomarse EXCLUSIVAMENTE del campo "socios" del balance, NO del NOSIS.
+
+APORTES IRREVOCABLES: Si tiene_aportes_irrevocables es true, mencioná en la sección patrimonial que los aportes irrevocables de capital fueron estimados como deuda en el pasivo no corriente por no presentar actas de compromiso de capitalización, por un monto de $X miles.
+
+VENCIMIENTO DEL BALANCE: Calculá sumando 18 meses a la fecha de cierre y mencionalo en las consideraciones previas. Ejemplo: si cierre es 31/07/2025, vencimiento es 31/01/2027.
+
+DEFLACTACIÓN BCRA (SECCIÓN PATRIMONIAL): 
+- Tomá endeudamiento_sf_cierre (deuda a la fecha de cierre del balance) y endeudamiento_sf_actual (deuda hoy)
+- Calculá la variación nominal entre ambos
+- Luego mencioná que al deflactar por inflación interanual del BCRA la variación real es diferente
+- Usá la fórmula: variacion_real = ((endeudamiento_sf_actual / endeudamiento_sf_cierre) / (1 + inflacion_estimada)) - 1
+- Estimá inflación interanual en 0.35 (35%) si no tenés el dato exacto
+- Expresá si el endeudamiento aumentó o disminuyó en términos reales
+
+VENTAS POST-CIERRE (SECCIÓN ECONÓMICA):
+- El campo compromisos_mensuales del NOSIS refleja actividad reciente
+- Estimá ventas post-cierre mensuales como: compromisos_mensuales / 0.247 (ratio histórico deuda/ventas)
+- Comparalo con el promedio mensual del ejercicio y mencioná si subieron o bajaron
+- Aclará que la comparación no está deflactada
 
 Devolvé ÚNICAMENTE este JSON sin texto adicional ni backticks:
 {{"patrimonial_calificacion":"","patrimonial_texto":"","financiera_calificacion":"","financiera_texto":"","economica_calificacion":"","economica_texto":""}}
@@ -507,23 +531,50 @@ def generar_docx(b, n, textos) -> bytes:
 
     # ── Consideraciones previas ────────────────────────────────────────────────
     add_par("CONSIDERACIONES PREVIAS", bold=True, space_after=2)
+    # Calcular vencimiento del balance: fecha_cierre + 18 meses
+    from datetime import date
+    import re as _re
+    _meses_num = {"enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+                  "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
+    _meses_nom = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
+                  7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+    vencimiento_balance = ""
+    try:
+        _m = _re.search(r'(\d+)\s+de\s+(\w+)\s+de\s+(\d{4})', fecha_cierre.lower())
+        if _m:
+            _d, _mes_str, _a = int(_m.group(1)), _m.group(2), int(_m.group(3))
+            _mes_n = _meses_num.get(_mes_str, 1)
+            _vmes = _mes_n + 18
+            _vano = _a + _vmes // 13
+            _vmes = _vmes % 12 or 12
+            vencimiento_balance = f"{_d:02d}/{_vmes:02d}/{_vano}"
+    except:
+        pass
+    vto_str = f" Vencimiento del Balance: {vencimiento_balance}." if vencimiento_balance else ""
     add_par(f"La presente información se confecciona en base a las cifras en miles obtenidas "
             f"de los Estados contables correspondientes al ejercicio cerrado el {fecha_cierre} "
             f"N° {nro_ej}, auditados por Contador Público y protocolizados por el {consejo} "
-            f"y demás información complementaria provista por la firma. Estimación realizada en miles.")
+            f"y demás información complementaria provista por la firma.{vto_str} Estimación realizada en miles.")
 
-    # Socios
-    socios = n.get("socios", [])
+    # Socios — siempre del balance, no del NOSIS
+    socios = b.get("socios", [])
     if socios:
         doc.add_paragraph()
         add_par(f"{razon_social} está compuesta por:", space_after=2)
         for s in socios:
             nombre = s.get("nombre", "")
+            cuit_s = s.get("cuit", "")
             pct_s  = s.get("porcentaje", "")
-            if isinstance(pct_s, float):
+            cargo  = s.get("cargo", "")
+            if isinstance(pct_s, float) and pct_s <= 1:
                 pct_s = f"{round(pct_s * 100)}%"
-            add_par(f"- {nombre} ({pct_s})",
-                    space_before=0, space_after=1)
+            elif pct_s:
+                pct_s = f"{pct_s}%"
+            linea = f"- {nombre}"
+            if cuit_s: linea += f" - CUIT {cuit_s}"
+            if pct_s:  linea += f" - ({pct_s})"
+            if cargo:  linea += f" - {cargo}"
+            add_par(linea, space_before=0, space_after=1)
 
     doc.add_paragraph()
 
@@ -687,11 +738,9 @@ def _ejecutar_generacion(archivo_balance, archivo_nosis, api_key):
         )
 
     except Exception as e:
-        import traceback
         estado.append(f"❌ Error: {str(e)}")
         mostrar("", "error")
         st.error(f"Ocurrió un error: {e}")
-        st.code(traceback.format_exc())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
