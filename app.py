@@ -177,8 +177,12 @@ def llamar_api(prompt: str, pdf_b64: str, max_tokens: int, api_key: str) -> dict
                  "anthropic-version": "2023-06-01"},
         method="POST"
     )
-    with urllib.request.urlopen(req) as resp:
-        r = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            r = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detalle = e.read().decode("utf-8")
+        raise RuntimeError(f"API error {e.code}: {detalle}")
     texto = r["content"][0]["text"].strip()
     if texto.startswith("```"):
         texto = texto.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -198,8 +202,12 @@ def llamar_api_texto(prompt: str, api_key: str, max_tokens: int = 3000) -> dict:
                  "anthropic-version": "2023-06-01"},
         method="POST"
     )
-    with urllib.request.urlopen(req) as resp:
-        r = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            r = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detalle = e.read().decode("utf-8")
+        raise RuntimeError(f"API error {e.code}: {detalle}")
     texto = r["content"][0]["text"].strip()
     if texto.startswith("```"):
         texto = texto.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -679,9 +687,11 @@ def _ejecutar_generacion(archivo_balance, archivo_nosis, api_key):
         )
 
     except Exception as e:
+        import traceback
         estado.append(f"❌ Error: {str(e)}")
         mostrar("", "error")
         st.error(f"Ocurrió un error: {e}")
+        st.code(traceback.format_exc())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
