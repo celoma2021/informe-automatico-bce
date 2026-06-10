@@ -151,7 +151,7 @@ def login():
 
 # ── Helpers API ───────────────────────────────────────────────────────────────
 API_URL = "https://api.anthropic.com/v1/messages"
-MODEL   = "claude-sonnet-4-20250514"
+MODEL   = "claude-3-5-sonnet-20241022"
 
 def pdf_a_base64(bytes_pdf: bytes) -> str:
     return base64.standard_b64encode(bytes_pdf).decode("utf-8")
